@@ -1,3 +1,4 @@
+
 import math
 import logging
 import os
@@ -29,6 +30,7 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS calcoli (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
         id_paziente TEXT,
         ca125_pre REAL,
         ca125_post REAL,
@@ -39,28 +41,28 @@ def init_db():
     conn.commit()
     conn.close()
 
-def salva_calcolo(id_paziente, pre, post, t, kelim):
+def salva_calcolo(user_id, id_paziente, pre, post, t, kelim):
     conn = sqlite3.connect("kelim.db")
     c = conn.cursor()
     c.execute('''INSERT INTO calcoli 
-        (id_paziente, ca125_pre, ca125_post, settimane, kelim, data)
-        VALUES (?, ?, ?, ?, ?, ?)''',
-        (id_paziente, pre, post, t, kelim, datetime.now().strftime("%d/%m/%Y %H:%M"))
+        (user_id, id_paziente, ca125_pre, ca125_post, settimane, kelim, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (user_id, id_paziente, pre, post, t, kelim, datetime.now().strftime("%d/%m/%Y %H:%M"))
     )
     conn.commit()
     conn.close()
 
-def esporta_csv():
+def esporta_csv(user_id):
     conn = sqlite3.connect("kelim.db")
     c = conn.cursor()
-    c.execute("SELECT * FROM calcoli ORDER BY id DESC")
+    c.execute("SELECT * FROM calcoli WHERE user_id = ? ORDER BY id DESC", (user_id,))
     righe = c.fetchall()
     conn.close()
 
-    filename = "kelim_export.csv"
+    filename = f"kelim_export_{user_id}.csv"
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=";")
-        writer.writerow(["ID", "ID Paziente", "Ca125 PRE", "Ca125 POST", "Settimane", "KELIM", "Data"])
+        writer.writerow(["ID", "User ID", "ID Paziente", "Ca125 PRE", "Ca125 POST", "Settimane", "KELIM", "Data"])
         writer.writerows(righe)
     return filename
 
@@ -110,7 +112,7 @@ async def bottone_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "export":
         await gestisci_export(update, context)
 
-    elif query.data == "calcola":
+    elif query.data in ("calcola", "nuovo"):
         await query.message.reply_text(
             "🔬 *Calcolo KELIM Score*\n\n"
             "Inserisci l'*ID paziente*:",
@@ -119,14 +121,15 @@ async def bottone_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ID_PAZIENTE
 
     elif query.data == "salva":
+        user_id = query.from_user.id
         id_paziente = context.user_data["id_paziente"]
         pre = context.user_data["pre"]
         post = context.user_data["post"]
         t = context.user_data["t"]
         kelim = context.user_data["kelim"]
-        salva_calcolo(id_paziente, pre, post, t, kelim)
+        salva_calcolo(user_id, id_paziente, pre, post, t, kelim)
         await query.message.reply_text(
-            "✅ *Dati salvati nel database!*\n\n"
+            "✅ *Dati salvati!*\n\n"
             "Seleziona un'opzione:",
             parse_mode="Markdown",
             reply_markup=menu_keyboard()
@@ -138,14 +141,6 @@ async def bottone_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Seleziona un'opzione:",
             reply_markup=menu_keyboard()
         )
-
-    elif query.data == "nuovo":
-        await query.message.reply_text(
-            "🔬 *Calcolo KELIM Score*\n\n"
-            "Inserisci l'*ID paziente*:",
-            parse_mode="Markdown"
-        )
-        return ID_PAZIENTE
 
 # --- STEP 0: ID PAZIENTE ---
 async def ricevo_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -269,17 +264,18 @@ async def ricevo_tempo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- EXPORT CSV ---
 async def gestisci_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        filename = esporta_csv()
+        user_id = update.callback_query.from_user.id
+        filename = esporta_csv(user_id)
         chat_id = update.callback_query.message.chat_id
         with open(filename, "rb") as f:
             await context.bot.send_document(
                 chat_id=chat_id,
                 document=f,
-                filename="kelim_export.csv",
+                filename=f"kelim_export.csv",
                 caption="📤 *Export KELIM Score*",
                 parse_mode="Markdown"
             )
-    except Exception as e:
+    except Exception:
         await update.callback_query.message.reply_text(
             "❌ Nessun dato da esportare ancora."
         )
@@ -300,9 +296,6 @@ if __name__ == "__main__":
 
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("calcola", lambda u, c: u.message.reply_text(
-                "Inserisci l'*ID paziente*:", parse_mode="Markdown"
-            )),
             CallbackQueryHandler(bottone_menu, pattern="^calcola$"),
             CallbackQueryHandler(bottone_menu, pattern="^nuovo$"),
         ],
@@ -316,7 +309,6 @@ if __name__ == "__main__":
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("export", gestisci_export))
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(bottone_menu))
 
